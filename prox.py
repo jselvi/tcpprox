@@ -13,6 +13,9 @@ TODO:
 from socket import *
 import errno, optparse, os, socket, ssl, time
 from select import *
+import httplib, urllib, urlparse
+from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
+import threading
 
 class Error(Exception) :
     pass
@@ -64,13 +67,48 @@ def getSslVers(opt, enable) :
         else :
             return ssl.PROTOCOL_SSLv23
 
+
+class myHandler(BaseHTTPRequestHandler):
+    q = None
+    def __init__(self, q, *args) :
+        self.q = q
+        BaseHTTPRequestHandler.__init__(self, *args) 
+    def do_POST(self) :
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write('Received')
+        content_len = int(self.headers.getheader('content-length', 0))
+        #payload = self.rfile.read(content_len)[8:]
+        payload = urlparse.parse_qs(self.rfile.read(content_len))['payload'][0]
+        [srcip, srcport] = self.path.split('/')[1].split(':')
+        [dstip, dstport] = self.path.split('/')[2].split(':')
+        for i in self.q :
+            if 'Proxy' in str(i.__class__) :
+                if i.peer.addr[0] == srcip and i.peer.addr[1] == int(srcport) :
+                    i.peer.queue.append(payload)
+                elif i.peer.addr[0] == dstip and i.peer.addr[1] == int(dstport) :
+                    i.cl.queue.append(payload)
+	return
+    def do_GET(self) :
+        return self.do_POST()
+    def log_message(self, format, *args):
+        pass
+
 class Server(object) :
     def __init__(self, opt, q) :
         self.opt = opt
         sslCert = opt.cert + ".pem"
         ver = getSslVers(opt, opt.sslIn)
-        self.sock = tcpListen(opt.ip6, opt.bindAddr, opt.locPort, 0, ver, sslCert, None)
         self.q = q
+        self.sock = tcpListen(opt.ip6, opt.bindAddr, opt.locPort, 0, ver, sslCert, None)
+	if self.opt.httpProxy is not None :
+            CustomHandler = lambda *args: myHandler(q, *args)
+            self.HTTPsock = HTTPServer( (self.opt.httpBindAddr, self.opt.callbackPort), CustomHandler )
+            th = threading.Thread(target=self.HTTPsock.serve_forever)
+            th.daemon = True
+            th.start()
+            print "HTTP Proxy started"
     def preWait(self, rr, r, w, e) :
         r.append(self.sock)
     def postWait(self, r, w, e) :
@@ -84,6 +122,9 @@ class Server(object) :
             self.q.append(Proxy(self.opt, cl, addr))
             if self.opt.oneshot :
                 safeClose(self.sock)
+                if self.opt.httpProxy is not None :
+                    self.HTTPsock.shutdown()
+                    safeClose(self.HTTPsock.sock)
                 return 'elvis has left the building'
 
 class Half(object) :
@@ -157,12 +198,30 @@ class Half(object) :
             return self.error("recv error", e)
         if len(buf) == 0 :
             return self.error("eof", 0)
-        self.dest.queue.append(buf)
+        if self.opt.httpProxy is None :
+            self.dest.queue.append(buf)
+        else :
+            if self.dir == 'i' :
+                srcip = self.addr[0]
+                srcport = str(self.addr[1])
+                dstip = self.opt.addr
+                dstport = str(self.opt.port)
+            else :
+                srcip = self.opt.addr
+                srcport = str(self.opt.port)
+                dstip = self.addr[0]
+                dstport = str(self.addr[1])
+            params = urllib.urlencode({'payload': buf})
+            [proxyHost, proxyPort] = self.opt.httpProxy.split(":")
+            conn = httplib.HTTPConnection(proxyHost, proxyPort)
+            conn.request("POST", "http://"+self.opt.callbackHost+":"+str(self.opt.callbackPort)+'/'+srcip+':'+srcport+'/'+dstip+':'+dstport, params)
+            response = conn.getresponse()
         if self.opt.log :
             now = time.time()
             a = '%s:%s' % self.addr
-            self.opt.log.write("%f %s %s %s\n" % (now, a, self.dir, buf.encode('hex')))
+            self.op
             self.opt.log.flush()
+
     def close(self) :
         safeClose(self.sock)
 
@@ -232,6 +291,10 @@ def getopts() :
     p.add_option("-A", dest="autoCname", action="store", help="CName for Auto-generated SSL cert")
     p.add_option('-1', dest='oneshot', action='store_true', help="Handle a single connection")
     p.add_option("-l", dest="logFile", help="Filename to log to")
+    p.add_option("-p", dest="httpProxy", help="Use HTTP proxy conversion")
+    p.add_option("--http-callback-host", dest="callbackHost", default="127.0.0.1", help="HTTP proxy callback host")
+    p.add_option("--http-callback-port", dest="callbackPort", default=8180, help="HTTP proxt callback host")
+    p.add_option("--http-bindaddr", dest="httpBindAddr", default="127.0.0.1", help="Address for HTTP to bind to")
     opt,args = p.parse_args()
     if opt.ssl :
         opt.sslIn = True
