@@ -57,6 +57,8 @@ QUICKSTART
 - To view data logged to a file by prox.py, use proxcat:
    - $ ./proxcat.py -x log.txt
 
+- Use an external HTTP proxy in order to edit the information:
+   - $ ./prox.py -L 1337 -p 127.0.0.1:8080 tcpsrv.test.com 1337 
 
 DEPENDENCIES
 =======
