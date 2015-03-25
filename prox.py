@@ -162,6 +162,16 @@ class Half(object) :
         self.err = "error on " + self.name
         return self.err
 
+
+    def customEncode(self, buf) :
+        params = urllib.urlencode({'payload': buf})
+        for c in ['<', '>', '(', ')', ':', '@', ' ', '"', '\'', '/', '\\', '*', '=', '\n' ] :
+            ce = '%' + c.encode('hex')
+            params = params.replace(ce.lower(),c)
+            params = params.replace(ce.upper(),c)        
+        params = params.replace('+',' ')
+        return params
+
     def writeSome(self) :
         try :
             n = self.sock.send(self.queue[0])
@@ -211,7 +221,7 @@ class Half(object) :
                 srcport = str(self.opt.port)
                 dstip = self.addr[0]
                 dstport = str(self.addr[1])
-            params = urllib.urlencode({'payload': buf})
+            params = self.customEncode(buf)
             [proxyHost, proxyPort] = self.opt.httpProxy.split(":")
             conn = httplib.HTTPConnection(proxyHost, proxyPort)
             conn.request("POST", "http://"+self.opt.callbackHost+":"+str(self.opt.callbackPort)+'/'+srcip+':'+srcport+'/'+dstip+':'+dstport, params)
